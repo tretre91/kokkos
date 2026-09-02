@@ -885,161 +885,22 @@ template <unsigned rank, class TeamMember>
 class MDTeamMember;
 }
 
-// template <unsigned rank, class... Properties>
-// class TeamPolicy<Rank<rank>, Properties...>
-//     : public TeamPolicy<Properties...> {
-//   using base_policy = TeamPolicy<Properties...>;
-//   using traits      = base_policy::traits;
-//
-//  private:
-//   Kokkos::Array<int, rank> m_league_sizes;
-//   int m_league_size;
-//
-//  public:
-//   using member_type =
-//       Impl::MDTeamMember<rank, typename base_policy::member_type>;
-//
-//   using base_policy::league_size;
-//
-//   TeamPolicy() : base_policy() {}
-//
-//   /** \brief  Construct policy with the given instance of the execution space
-//   */ template <class T> TeamPolicy(const typename traits::execution_space&
-//   space_,
-//              const T (&league_sizes)[rank], int team_size,
-//              int vector_length = 1)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     team_size, vector_length),
-//         m_league_sizes(Impl2::to_array_potentially_narrowing<
-//                        int, decltype(m_league_sizes)>(league_sizes)),
-//         m_league_size(league_size()) {}
-//
-//   template <class T>
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const T (&league_sizes)[rank], Kokkos::AUTO_t,
-//              int vector_length = 1)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     Kokkos::AUTO, vector_length),
-//         m_league_sizes(Impl2::to_array_potentially_narrowing<
-//                        int, decltype(m_league_sizes)>(league_sizes)),
-//         m_league_size(league_size()) {}
-//
-//   template <class T>
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const T (&league_sizes)[rank], Kokkos::AUTO_t, Kokkos::AUTO_t)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     Kokkos::AUTO, Kokkos::AUTO),
-//         m_league_sizes(Impl2::to_array_potentially_narrowing<
-//                        int, decltype(m_league_sizes)>(league_sizes)),
-//         m_league_size(league_size()) {}
-//
-//   template <class T>
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const T (&league_sizes)[rank], int team_size, Kokkos::AUTO_t)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     team_size, Kokkos::AUTO),
-//         m_league_sizes(Impl2::to_array_potentially_narrowing<
-//                        int, decltype(m_league_sizes)>(league_sizes)),
-//         m_league_size(league_size()) {}
-//
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const Kokkos::Array<int, rank>& league_sizes, int team_size,
-//              int vector_length = 1)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     team_size, vector_length),
-//         m_league_sizes(league_sizes),
-//         m_league_size(league_size()) {}
-//
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const Kokkos::Array<int, rank>& league_sizes, Kokkos::AUTO_t,
-//              int vector_length = 1)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     Kokkos::AUTO, vector_length),
-//         m_league_sizes(league_sizes),
-//         m_league_size(league_size()) {}
-//
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const Kokkos::Array<int, rank>& league_sizes, Kokkos::AUTO_t,
-//              Kokkos::AUTO_t)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     Kokkos::AUTO, Kokkos::AUTO),
-//         m_league_sizes(league_sizes),
-//         m_league_size(league_size()) {}
-//
-//   TeamPolicy(const typename traits::execution_space& space_,
-//              const Kokkos::Array<int, rank>& league_sizes, int team_size,
-//              Kokkos::AUTO_t)
-//       : base_policy(space_,
-//                     std::accumulate(std::begin(league_sizes),
-//                                     std::end(league_sizes), 1),
-//                     team_size, Kokkos::AUTO),
-//         m_league_sizes(league_sizes),
-//         m_league_size(league_size()) {}
-//
-//   // FIXME:
-//   /** \brief  Construct policy with the default instance of the execution
-//   space
-//    */
-//
-//   template <class... OtherProperties>
-//   TeamPolicy(const TeamPolicy<OtherProperties...>& p) : base_policy(p) {}
-//
-//   TeamPolicy(const Impl::PolicyUpdate tag, const TeamPolicy& other,
-//              typename traits::execution_space space)
-//       : base_policy(tag, other, std::move(space)) {}
-//
-//   // private:
-//   //  TeamPolicy(const internal_policy& p) : internal_policy(p) {}
-//
-//   const Kokkos::Array<int, rank>& league_sizes() const {
-//     return m_league_sizes;
-//   }
-//
-//   int league_size(int dim) const {
-//     // FIXME: bounds checking?
-//     return m_league_sizes[dim];
-//   }
-// };
-
-namespace Impl {
-template <unsigned rank, class ExecSpace, class... Properties>
-class TeamPolicyInternal<Kokkos::Rank<rank>, ExecSpace, Properties...>
-    : public TeamPolicyInternal<ExecSpace, Properties...> {
-  using base_t = TeamPolicyInternal<ExecSpace, Properties...>;
-
- public:
-  using base_t::base_t;
-  using member_type = MDTeamMember<rank, typename base_t::member_type>;
-};
-}  // namespace Impl
-
-template <unsigned rank, class... Properties>
-class TeamPolicy<Kokkos::Rank<rank>, Properties...>
+template <class... Properties>
+  requires(!std::is_void_v<
+           typename Impl::PolicyTraits<Properties...>::iteration_pattern>)
+class TeamPolicy<Properties...>
     : public Impl::TeamPolicyInternal<
-          Kokkos::Rank<rank>,
           typename Impl::PolicyTraits<Properties...>::execution_space,
           Properties...> {
   using internal_policy = Impl::TeamPolicyInternal<
-      Kokkos::Rank<rank>,
       typename Impl::PolicyTraits<Properties...>::execution_space,
       Properties...>;
 
   template <class... OtherProperties>
   friend class TeamPolicy;
+
+  static constexpr unsigned rank =
+      internal_policy::traits::iteration_pattern::rank;
 
   static int validate_league_size_argument(int league_size) {
     if (league_size < 0) {
@@ -1085,9 +946,9 @@ class TeamPolicy<Kokkos::Rank<rank>, Properties...>
   }
 
   static int compute_league_size(const Kokkos::Array<int, rank>& sizes) {
-    int result = 0;
+    int result = 1;
     for (unsigned i = 0; i < rank; i++) {
-      result += validate_league_size_argument(sizes[i]);
+      result *= validate_league_size_argument(sizes[i]);
     }
     return result;
   }
@@ -1099,7 +960,9 @@ class TeamPolicy<Kokkos::Rank<rank>, Properties...>
 
   using traits = Impl::PolicyTraits<Properties...>;
 
-  using execution_policy = TeamPolicy<Kokkos::Rank<rank>, Properties...>;
+  using member_type =
+      Impl::MDTeamMember<rank, typename internal_policy::member_type>;
+  using execution_policy = TeamPolicy<Properties...>;
 
   TeamPolicy() : internal_policy(0, AUTO) {}
 

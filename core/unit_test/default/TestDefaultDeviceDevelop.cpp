@@ -4,7 +4,6 @@
 #include <gtest/gtest.h>
 
 #include <Kokkos_Macros.hpp>
-#include "impl/Kokkos_AnalyzePolicy.hpp"
 #ifdef KOKKOS_ENABLE_EXPERIMENTAL_CXX20_MODULES
 import kokkos.core;
 #else
@@ -16,8 +15,8 @@ import kokkos.core;
 namespace Test {
 
 TEST(defaultdevicetype, development_test) {
-  Kokkos::TeamPolicy<Kokkos::Rank<3>, Kokkos::HIP> policy(
-      Kokkos::HIP(), {4, 2, 3}, Kokkos::AUTO);
+  Kokkos::TeamPolicy<Kokkos::Rank<3>, Kokkos::HIP> policy(Kokkos::HIP(),
+                                                          {4, 2, 3}, 1);
   Kokkos::parallel_for(
       "test", policy, KOKKOS_LAMBDA(decltype(policy)::member_type team) {
         auto [x, y, z] = team.league_ranks();
