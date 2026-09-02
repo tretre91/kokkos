@@ -15,6 +15,7 @@ static_assert(false,
 #include <Kokkos_Core_fwd.hpp>
 #include <Kokkos_DetectionIdiom.hpp>
 #include <Kokkos_ExecPolicy.hpp>
+#include <impl/Kokkos_MD_Team.hpp>
 #include <Kokkos_View.hpp>
 
 #include <impl/Kokkos_Tools.hpp>

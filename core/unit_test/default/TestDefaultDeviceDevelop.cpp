@@ -14,6 +14,14 @@ import kokkos.core;
 
 namespace Test {
 
-TEST(defaultdevicetype, development_test) {}
+TEST(defaultdevicetype, development_test) {
+  Kokkos::TeamPolicy<Kokkos::Rank<3>, Kokkos::HIP> policy(Kokkos::HIP(),
+                                                          {4, 2, 3}, 1);
+  Kokkos::parallel_for(
+      "test", policy, KOKKOS_LAMBDA(decltype(policy)::member_type team) {
+        auto [x, y, z] = team.league_ranks();
+        Kokkos::printf("%d = (%d,%d,%d)\n", team.league_rank(), x, y, z);
+      });
+}
 
 }  // namespace Test

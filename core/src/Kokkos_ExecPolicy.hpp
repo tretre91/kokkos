@@ -13,13 +13,16 @@ static_assert(false,
 #include <impl/Kokkos_Traits.hpp>
 #include <impl/Kokkos_Error.hpp>
 #include <impl/Kokkos_AnalyzePolicy.hpp>
+#include <Kokkos_Array.hpp>
 #include <Kokkos_BitManipulation.hpp>
 #include <Kokkos_Concepts.hpp>
+#include <Kokkos_Rank.hpp>
 #include <Kokkos_TypeInfo.hpp>
 #ifndef KOKKOS_ENABLE_IMPL_TYPEINFO
 #include <typeinfo>
 #endif
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <type_traits>
 
@@ -797,6 +800,287 @@ template <typename ES,
           typename = std::enable_if_t<Kokkos::is_execution_space_v<ES>>>
 TeamPolicy(ES const&, int, int, Kokkos::AUTO_t const&) -> TeamPolicy<ES>;
 
+// FIXME: this is pulled from MDRange
+namespace Impl2 {
+
+// NOTE the comparison below is encapsulated to silent warnings about pointless
+// comparison of unsigned integer with zero
+template <class T>
+constexpr std::enable_if_t<!std::is_signed_v<T>, bool>
+is_less_than_value_initialized_variable(T) {
+  return false;
+}
+
+template <class T>
+constexpr std::enable_if_t<std::is_signed_v<T>, bool>
+is_less_than_value_initialized_variable(T arg) {
+  return arg < T{};
+}
+
+// Checked narrowing conversion that calls abort if the cast changes the value
+template <class To, class From>
+constexpr To checked_narrow_cast(From arg, std::size_t idx) {
+  constexpr const bool is_different_signedness =
+      (std::is_signed_v<To> != std::is_signed_v<From>);
+  auto const ret = static_cast<To>(arg);  // NOLINT(bugprone-signed-char-misuse)
+  if (static_cast<From>(ret) != arg ||
+      (is_different_signedness &&
+       is_less_than_value_initialized_variable(arg) !=
+           is_less_than_value_initialized_variable(ret))) {
+    auto msg =
+        "Kokkos::MDRangePolicy bound type error: an unsafe implicit conversion "
+        "is performed on a bound (" +
+        std::to_string(arg) + ") in dimension (" + std::to_string(idx) +
+        "), which may not preserve its original value.\n";
+    Kokkos::abort(msg.c_str());
+  }
+  return ret;
+}
+// NOTE prefer C array U[M] to std::initalizer_list<U> so that the number of
+// elements can be deduced (https://stackoverflow.com/q/40241370)
+// NOTE for some unfortunate reason the policy bounds are stored as signed
+// integer arrays (point_type which is Kokkos::Array<std::int64_t>) so we
+// specify the index type (actual policy index_type from the traits) and check
+// ahead of time that narrowing conversions will be safe.
+template <class IndexType, class Array, class U, std::size_t M>
+constexpr Array to_array_potentially_narrowing(const U (&init)[M]) {
+  using T = typename Array::value_type;
+  Array a{};
+  constexpr std::size_t N = a.size();
+  static_assert(M <= N);
+  auto* ptr = a.data();
+  // NOTE equivalent to
+  // std::transform(std::begin(init), std::end(init), a.data(),
+  //                [](U x) { return static_cast<T>(x); });
+  // except that std::transform is not constexpr.
+  for (std::size_t i = 0; i < M; ++i) {
+    *ptr++ = checked_narrow_cast<T>(init[i], i);
+    (void)checked_narrow_cast<IndexType>(init[i], i);  // see note above
+  }
+  return a;
+}
+
+// NOTE Making a copy even when std::is_same<Array, Kokkos::Array<U, M>>::value
+// is true to reduce code complexity.  You may change this if you have a good
+// reason to.  Intentionally not enabling std::array at this time but this may
+// change too.
+template <class IndexType, class NVCC_WONT_LET_ME_CALL_YOU_Array, class U,
+          std::size_t M>
+constexpr NVCC_WONT_LET_ME_CALL_YOU_Array to_array_potentially_narrowing(
+    Kokkos::Array<U, M> const& other) {
+  using T = typename NVCC_WONT_LET_ME_CALL_YOU_Array::value_type;
+  NVCC_WONT_LET_ME_CALL_YOU_Array a{};
+  constexpr std::size_t N = a.size();
+  static_assert(M <= N);
+  for (std::size_t i = 0; i < M; ++i) {
+    a[i] = checked_narrow_cast<T>(other[i], i);
+    (void)checked_narrow_cast<IndexType>(other[i], i);  // see note above
+  }
+  return a;
+}
+}  // namespace Impl2
+
+namespace Impl {
+template <unsigned rank, class TeamMember>
+class MDTeamMember;
+}
+
+template <class... Properties>
+  requires(!std::is_void_v<
+           typename Impl::PolicyTraits<Properties...>::iteration_pattern>)
+class TeamPolicy<Properties...>
+    : public Impl::TeamPolicyInternal<
+          typename Impl::PolicyTraits<Properties...>::execution_space,
+          Properties...> {
+  using internal_policy = Impl::TeamPolicyInternal<
+      typename Impl::PolicyTraits<Properties...>::execution_space,
+      Properties...>;
+
+  template <class... OtherProperties>
+  friend class TeamPolicy;
+
+  static constexpr unsigned rank =
+      internal_policy::traits::iteration_pattern::rank;
+
+  static int validate_league_size_argument(int league_size) {
+    if (league_size < 0) {
+      std::stringstream err;
+      err << "Kokkos::TeamPolicy error: league_size (" << league_size
+          << ") must be greater than or equal to 0";
+      Kokkos::abort(err.str().c_str());
+    }
+    return league_size;
+  }
+  static int validate_team_size_argument(int team_size) {
+    if (team_size < 1) {
+      std::stringstream err;
+      err << "Kokkos::TeamPolicy error: team_size (" << team_size
+          << ") must be greater than or equal to 1";
+      Kokkos::abort(err.str().c_str());
+    }
+    return team_size;
+  }
+  static int validate_vector_length_argument(int vector_length) {
+    if (vector_length < 1) {
+      std::stringstream err;
+      err << "Kokkos::TeamPolicy error: vector_length (" << vector_length
+          << ") must be greater than or equal to 1";
+      Kokkos::abort(err.str().c_str());
+    }
+#ifndef KOKKOS_ENABLE_DEPRECATED_CODE_5
+    int const vector_length_max = internal_policy::vector_length_max();
+    if (vector_length > vector_length_max) {
+      std::stringstream err;
+      err << "Kokkos::TeamPolicy error: vector_length (" << vector_length
+          << ") exceeds the maximum allowed (" << vector_length_max << ")";
+      Kokkos::abort(err.str().c_str());
+    }
+    if (!Kokkos::has_single_bit(static_cast<unsigned>(vector_length))) {
+      std::stringstream err;
+      err << "Kokkos::TeamPolicy error: vector_length (" << vector_length
+          << ") must be a power of 2";
+      Kokkos::abort(err.str().c_str());
+    }
+#endif
+    return vector_length;
+  }
+
+  static int compute_league_size(const Kokkos::Array<int, rank>& sizes) {
+    int result = 1;
+    for (unsigned i = 0; i < rank; i++) {
+      result *= validate_league_size_argument(sizes[i]);
+    }
+    return result;
+  }
+
+  Kokkos::Array<int, rank> m_league_sizes;
+
+ public:
+  using internal_policy::league_size;
+
+  using traits = Impl::PolicyTraits<Properties...>;
+
+  using member_type =
+      Impl::MDTeamMember<rank, typename internal_policy::member_type>;
+  using execution_policy = TeamPolicy<Properties...>;
+
+  TeamPolicy() : internal_policy(0, AUTO) {}
+
+  /** \brief  Construct policy with the given instance of the execution space */
+  TeamPolicy(const typename traits::execution_space& space_,
+             const Kokkos::Array<int, rank>& league_sizes, int team_size,
+             int vector_length = 1)
+      : internal_policy(space_, compute_league_size(league_sizes),
+                        validate_team_size_argument(team_size),
+                        validate_vector_length_argument(vector_length)),
+        m_league_sizes(league_sizes) {}
+
+  TeamPolicy(const typename traits::execution_space& space_,
+             const Kokkos::Array<int, rank>& league_sizes, Kokkos::AUTO_t,
+             int vector_length = 1)
+      : internal_policy(space_, compute_league_size(league_sizes), Kokkos::AUTO,
+                        validate_vector_length_argument(vector_length)),
+        m_league_sizes(league_sizes) {}
+
+  TeamPolicy(const typename traits::execution_space& space_,
+             const Kokkos::Array<int, rank>& league_sizes, Kokkos::AUTO_t,
+             Kokkos::AUTO_t)
+      : internal_policy(space_, compute_league_size(league_sizes), Kokkos::AUTO,
+                        Kokkos::AUTO),
+        m_league_sizes(league_sizes) {}
+
+  TeamPolicy(const typename traits::execution_space& space_,
+             const Kokkos::Array<int, rank>& league_sizes, const int team_size,
+             Kokkos::AUTO_t)
+      : internal_policy(space_, compute_league_size(league_sizes),
+                        validate_team_size_argument(team_size), Kokkos::AUTO),
+        m_league_sizes(league_sizes) {}
+
+  /** \brief  Construct policy with the default instance of the execution space
+   */
+  // TeamPolicy(int league_size, int team_size, int vector_length = 1)
+  //     : internal_policy(validate_league_size_argument(league_size),
+  //                       validate_team_size_argument(team_size),
+  //                       validate_vector_length_argument(vector_length)) {}
+  //
+  // TeamPolicy(int league_size, Kokkos::AUTO_t, int vector_length = 1)
+  //     : internal_policy(validate_league_size_argument(league_size),
+  //                       Kokkos::AUTO,
+  //                       validate_vector_length_argument(vector_length)) {}
+  //
+  // TeamPolicy(int league_size, Kokkos::AUTO_t, Kokkos::AUTO_t)
+  //     : internal_policy(validate_league_size_argument(league_size),
+  //                       Kokkos::AUTO, Kokkos::AUTO) {}
+  //
+  // TeamPolicy(int league_size, int team_size, Kokkos::AUTO_t)
+  //     : internal_policy(validate_league_size_argument(league_size),
+  //                       validate_team_size_argument(team_size), Kokkos::AUTO)
+  //                       {}
+
+  template <class... OtherProperties>
+  TeamPolicy(const TeamPolicy<OtherProperties...>& p) : internal_policy(p) {
+    // Cannot call converting constructor in the member initializer list because
+    // it is not a direct base.
+    internal_policy::traits::operator=(p);
+  }
+
+  TeamPolicy(const Impl::PolicyUpdate tag, const TeamPolicy& other,
+             typename traits::execution_space space)
+      : internal_policy(tag, other, std::move(space)) {}
+
+ private:
+  TeamPolicy(const internal_policy& p) : internal_policy(p) {}
+
+ public:
+  const Kokkos::Array<int, rank>& league_sizes() const {
+    return m_league_sizes;
+  }
+
+  int league_size(int dim) const {
+    // FIXME: bounds checking?
+    return m_league_sizes[dim];
+  }
+
+  inline TeamPolicy& set_chunk_size(int chunk) {
+    static_assert(
+        std::is_same_v<decltype(internal_policy::set_chunk_size(chunk)),
+                       internal_policy&>,
+        "internal set_chunk_size should return a reference");
+    return static_cast<TeamPolicy&>(internal_policy::set_chunk_size(chunk));
+  }
+
+  inline TeamPolicy& set_scratch_size(const int& level,
+                                      const Impl::PerTeamValue& per_team) {
+    static_assert(std::is_same_v<decltype(internal_policy::set_scratch_size(
+                                     level, per_team)),
+                                 internal_policy&>,
+                  "internal set_chunk_size should return a reference");
+
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<TeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_team));
+  }
+  inline TeamPolicy& set_scratch_size(const int& level,
+                                      const Impl::PerThreadValue& per_thread) {
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<TeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_thread));
+  }
+  inline TeamPolicy& set_scratch_size(const int& level,
+                                      const Impl::PerTeamValue& per_team,
+                                      const Impl::PerThreadValue& per_thread) {
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<TeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_team, per_thread));
+  }
+  inline TeamPolicy& set_scratch_size(const int& level,
+                                      const Impl::PerThreadValue& per_thread,
+                                      const Impl::PerTeamValue& per_team) {
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<TeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_team, per_thread));
+  }
+};
 namespace Impl {
 
 template <typename iType, class TeamMemberType>
