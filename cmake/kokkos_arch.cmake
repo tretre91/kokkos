@@ -489,6 +489,7 @@ endif()
 
 if(KOKKOS_ARCH_A64FX)
   set(KOKKOS_ARCH_ARM_NEON ON)
+  set(KOKKOS_ARCH_ARM_SVE ON)
   compiler_specific_flags(
     COMPILER_ID
     KOKKOS_CXX_HOST_COMPILER_ID
