@@ -14,6 +14,19 @@
  * for documentation on the Neon-SVE bridge
  */
 
+KOKKOS_IMPL_HOST_FORCEINLINE_FUNCTION static int64x2_t svget_neonq_s64(
+    svint64_t z) {
+  int64x2_t res;
+
+  svbool_t pg0 = svpfirst(svptrue_b64(), svpfalse());
+  svbool_t pg1 = svpnext_b64(pg0, pg0);
+
+  res[0] = svlastb(pg0, z);
+  res[1] = svlastb(pg1, z);
+
+  return res;
+}
+
 KOKKOS_IMPL_HOST_FORCEINLINE_FUNCTION static uint64x2_t svget_neonq_u64(
     svuint64_t z) {
   uint64x2_t res;
