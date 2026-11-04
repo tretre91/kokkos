@@ -126,6 +126,143 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
   }
 };
 
+template <class FunctorType, class R, class... Properties>
+class ParallelFor<FunctorType, Kokkos::MDTeamPolicy<R, Properties...>,
+                  Kokkos::Threads> {
+ private:
+  using MDPolicy = Kokkos::MDTeamPolicy<R, Properties...>;
+  using Policy =
+      Kokkos::Impl::TeamPolicyInternal<R, Kokkos::Threads, Properties...>;
+  using WorkTag = typename Policy::work_tag;
+  using Member  = typename Policy::member_type;
+
+  static constexpr unsigned rank = MDPolicy::rank;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+  const size_t m_shared;
+
+  template <class TagType, class Schedule>
+  inline static std::enable_if_t<std::is_void_v<TagType> &&
+                                 std::is_same_v<Schedule, Kokkos::Static>>
+  exec_team(const FunctorType &functor, Member member) {
+    int league_rank = member.league_rank();
+    for (; member.valid_static(); member.next_static()) {
+      int new_league_rank = member.league_rank();
+      member.update_league_ranks(new_league_rank - league_rank);
+      league_rank = new_league_rank;
+      functor(member);
+    }
+  }
+
+  template <class TagType, class Schedule>
+  inline static std::enable_if_t<!std::is_void_v<TagType> &&
+                                 std::is_same_v<Schedule, Kokkos::Static>>
+  exec_team(const FunctorType &functor, Member member) {
+    const TagType t{};
+    int league_rank = member.league_rank();
+    for (; member.valid_static(); member.next_static()) {
+      int new_league_rank = member.league_rank();
+      member.update_league_ranks(new_league_rank - league_rank);
+      league_rank = new_league_rank;
+      functor(t, member);
+    }
+  }
+
+  template <class TagType, class Schedule>
+  inline static std::enable_if_t<std::is_void_v<TagType> &&
+                                 std::is_same_v<Schedule, Kokkos::Dynamic>>
+  exec_team(const FunctorType &functor, Member member) {
+    int league_rank = member.league_rank();
+    for (; member.valid_dynamic(); member.next_dynamic()) {
+      int new_league_rank = member.league_rank();
+      member.update_league_ranks(new_league_rank - league_rank);
+      league_rank = new_league_rank;
+      functor(member);
+    }
+  }
+
+  template <class TagType, class Schedule>
+  inline static std::enable_if_t<!std::is_void_v<TagType> &&
+                                 std::is_same_v<Schedule, Kokkos::Dynamic>>
+  exec_team(const FunctorType &functor, Member member) {
+    const TagType t{};
+    int league_rank = member.league_rank();
+    for (; member.valid_dynamic(); member.next_dynamic()) {
+      int new_league_rank = member.league_rank();
+      member.update_league_ranks(new_league_rank - league_rank);
+      league_rank = new_league_rank;
+      functor(t, member);
+    }
+  }
+
+  static void exec(ThreadsInternal &instance, const void *arg) {
+    const ParallelFor &self = *((const ParallelFor *)arg);
+
+    ParallelFor::exec_team<WorkTag, typename Policy::schedule_type::type>(
+        self.m_functor, Member(self.m_policy.league_sizes(), &instance,
+                               self.m_policy, self.m_shared));
+
+    instance.barrier();
+    instance.fan_in();
+  }
+  template <typename Policy>
+  Policy fix_policy(Policy policy) {
+    if (policy.impl_vector_length() < 0) {
+      policy.impl_set_vector_length(1);
+    }
+    if (policy.team_size() < 0) {
+      int team_size = policy.team_size_recommended(m_functor, ParallelForTag{});
+      if (team_size <= 0)
+        Kokkos::Impl::throw_runtime_exception(
+            "Kokkos::Impl::ParallelFor<Threads, TeamPolicy> could not find a "
+            "valid execution configuration.");
+      policy.impl_set_team_size(team_size);
+    }
+    return policy;
+  }
+
+ public:
+  inline void execute() const {
+    ThreadsInternal::resize_scratch(
+        0, Policy::member_type::team_reduce_size() + m_shared);
+
+    ThreadsInternal::start(&ParallelFor::exec, this);
+
+    ThreadsInternal::fence();
+  }
+
+  ParallelFor(const FunctorType &arg_functor, const Policy &arg_policy)
+      : m_functor(arg_functor),
+        m_policy(fix_policy(arg_policy)),
+        m_shared(m_policy.scratch_size(0) + m_policy.scratch_size(1) +
+                 FunctorTeamShmemSize<FunctorType>::value(
+                     m_functor, m_policy.team_size())) {
+    if ((m_policy.scratch_size(0, m_policy.team_size()) +
+         FunctorTeamShmemSize<FunctorType>::value(m_functor,
+                                                  m_policy.team_size())) >
+        static_cast<size_t>(m_policy.scratch_size_max(0))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<Threads>: Requested too much scratch "
+               "memory on level 0. Requested: "
+            << m_policy.scratch_size(0, m_policy.team_size()) +
+                   FunctorTeamShmemSize<FunctorType>::value(
+                       m_functor, m_policy.team_size())
+            << ", Maximum: " << m_policy.scratch_size_max(0);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+    if (m_policy.scratch_size(1, m_policy.team_size()) >
+        static_cast<size_t>(m_policy.scratch_size_max(1))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<Threads>: Requested too much scratch "
+               "memory on level 1. Requested: "
+            << m_policy.scratch_size(1, m_policy.team_size())
+            << ", Maximum: " << m_policy.scratch_size_max(1);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+  }
+};
+
 }  // namespace Impl
 }  // namespace Kokkos
 

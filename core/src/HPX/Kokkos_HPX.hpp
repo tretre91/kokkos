@@ -1547,6 +1547,96 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
     }
   }
 };
+template <class FunctorType, class R, class... Properties>
+class ParallelFor<FunctorType, Kokkos::MDTeamPolicy<R, Properties...>,
+                  Kokkos::Experimental::HPX> {
+ private:
+  using Policy =
+      TeamPolicyInternal<R, Kokkos::Experimental::HPX, Properties...>;
+  using WorkTag      = typename Policy::work_tag;
+  using Member       = typename Policy::member_type;
+  using memory_space = Kokkos::HostSpace;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+  const int m_league;
+  const std::size_t m_shared;
+
+ public:
+  void setup() const {
+    const int num_worker_threads = m_policy.space().concurrency();
+    hpx_thread_buffer &buffer    = m_policy.space().impl_get_buffer();
+    auto nchunks =
+        get_num_chunks(0, m_policy.chunk_size(), m_policy.league_size());
+    const auto buffer_size = std::min(nchunks, num_worker_threads);
+    buffer.resize(buffer_size, m_shared);
+  }
+
+  void execute_range(const int i) const {
+    const int t = Kokkos::Experimental::HPX::impl_hardware_thread_id();
+    hpx_thread_buffer &buffer = m_policy.space().impl_get_buffer();
+    const auto r =
+        get_chunk_range(i, 0, m_policy.chunk_size(), m_policy.league_size());
+    const int num_chunks =
+        get_num_chunks(0, m_policy.chunk_size(), m_policy.league_size());
+    const int num_worker_threads = m_policy.space().concurrency();
+    // if num_chunks > num hw threads, use hw threadid t; else use chunkid i
+    const int buffer_t = num_chunks > num_worker_threads ? t : i;
+    for (int league_rank = r.begin; league_rank < r.end; ++league_rank) {
+      if constexpr (std::is_same_v<WorkTag, void>) {
+        m_functor(Member(m_policy.league_sizes(), m_policy, 0, league_rank,
+                         buffer.get(buffer_t), m_shared));
+      } else {
+        m_functor(WorkTag{},
+                  Member(m_policy.league_ranks(), m_policy, 0, league_rank,
+                         buffer.get(buffer_t), m_shared));
+      }
+    }
+  }
+
+  void finalize() const {}
+
+  void execute() const {
+    const int num_chunks =
+        get_num_chunks(0, m_policy.chunk_size(), m_policy.league_size());
+    m_policy.space().impl_bulk_setup_finalize(
+        false, is_light_weight_policy<Policy>(), *this, num_chunks,
+        hpx::threads::thread_stacksize::nostack);
+  }
+
+  ParallelFor(const FunctorType &arg_functor, const Policy &arg_policy)
+      : m_functor(arg_functor),
+        m_policy(arg_policy),
+        m_league(m_policy.league_size()),
+        m_shared(m_policy.scratch_size(0) + m_policy.scratch_size(1) +
+                 FunctorTeamShmemSize<FunctorType>::value(
+                     m_functor, m_policy.team_size())) {
+    if ((m_policy.scratch_size(0) + FunctorTeamShmemSize<FunctorType>::value(
+                                        m_functor, m_policy.team_size())) >
+        static_cast<size_t>(
+            TeamPolicy<Kokkos::Experimental::HPX>::scratch_size_max(0))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<HPX>: Requested too much scratch memory "
+               "on level 0. Requested: "
+            << m_policy.scratch_size(0) +
+                   FunctorTeamShmemSize<FunctorType>::value(
+                       m_functor, m_policy.team_size())
+            << ", Maximum: "
+            << TeamPolicy<Kokkos::Experimental::HPX>::scratch_size_max(0);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+    if (m_policy.scratch_size(1) >
+        static_cast<size_t>(
+            TeamPolicy<Kokkos::Experimental::HPX>::scratch_size_max(1))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<HPX>: Requested too much scratch memory "
+               "on level 1. Requested: "
+            << m_policy.scratch_size(1) << ", Maximum: "
+            << TeamPolicy<Kokkos::Experimental::HPX>::scratch_size_max(1);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+  }
+};
 
 template <class CombinedFunctorReducerType, class... Properties>
 class ParallelReduce<CombinedFunctorReducerType,

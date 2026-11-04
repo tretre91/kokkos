@@ -301,6 +301,95 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
   }
 };
 
+template <class FunctorType, class P, class... Properties>
+class ParallelFor<FunctorType, Kokkos::MDTeamPolicy<P, Properties...>,
+                  Kokkos::Serial> {
+ private:
+  enum { TEAM_REDUCE_SIZE = 512 };
+
+  using Policy = TeamPolicyInternal<P, Kokkos::Serial, Properties...>;
+  using Member = typename Policy::member_type;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+  const int m_league;
+  const size_t m_shared;
+
+  template <class TagType>
+  std::enable_if_t<std::is_void_v<TagType>> exec(
+      HostThreadTeamData& data) const {
+    for (int ileague = 0; ileague < m_league; ++ileague) {
+      m_functor(Member(m_policy.league_sizes(), data, ileague, m_league));
+    }
+  }
+
+  template <class TagType>
+  std::enable_if_t<!std::is_void_v<TagType>> exec(
+      HostThreadTeamData& data) const {
+    const TagType t{};
+    for (int ileague = 0; ileague < m_league; ++ileague) {
+      m_functor(t, Member(m_policy.league_sizes(), data, ileague, m_league));
+    }
+  }
+
+ public:
+  inline void execute() const {
+    const size_t pool_reduce_size  = 0;  // Never shrinks
+    const size_t team_reduce_size  = TEAM_REDUCE_SIZE;
+    const size_t team_shared_size  = m_shared;
+    const size_t thread_local_size = 0;  // Never shrinks
+
+    auto* internal_instance = m_policy.space().impl_internal_space_instance();
+
+    // caused a possibly codegen-related slowdown, especially in GCC 9-11
+    // with KOKKOS_ARCH_NATIVE
+    // https://github.com/kokkos/kokkos/issues/7268
+#ifndef KOKKOS_ENABLE_ATOMICS_BYPASS
+    // Make sure kernels are running sequentially even when using multiple
+    // threads, lock resize_thread_team_data
+    std::lock_guard<std::mutex> instance_lock(
+        internal_instance->m_instance_mutex);
+#endif
+
+    internal_instance->resize_thread_team_data(
+        pool_reduce_size, team_reduce_size, team_shared_size,
+        thread_local_size);
+
+    this->template exec<typename Policy::work_tag>(
+        internal_instance->m_thread_team_data);
+  }
+
+  ParallelFor(const FunctorType& arg_functor, const Policy& arg_policy)
+      : m_functor(arg_functor),
+        m_policy(arg_policy),
+        m_league(m_policy.league_size()),
+        m_shared(m_policy.scratch_size(0) + m_policy.scratch_size(1) +
+                 FunctorTeamShmemSize<FunctorType>::value(
+                     m_functor, m_policy.team_size())) {
+    if ((m_policy.scratch_size(0) + FunctorTeamShmemSize<FunctorType>::value(
+                                        m_functor, m_policy.team_size())) >
+        static_cast<size_t>(TeamPolicy<Kokkos::Serial>::scratch_size_max(0))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<Serial>: Requested too much scratch "
+               "memory on level 0. Requested: "
+            << m_policy.scratch_size(0) +
+                   FunctorTeamShmemSize<FunctorType>::value(
+                       m_functor, m_policy.team_size())
+            << ", Maximum: " << TeamPolicy<Kokkos::Serial>::scratch_size_max(0);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+    if (m_policy.scratch_size(1) >
+        static_cast<size_t>(TeamPolicy<Kokkos::Serial>::scratch_size_max(1))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<Serial>: Requested too much scratch "
+               "memory on level 1. Requested: "
+            << m_policy.scratch_size(1)
+            << ", Maximum: " << TeamPolicy<Kokkos::Serial>::scratch_size_max(1);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+  }
+};
+
 /*--------------------------------------------------------------------------*/
 
 template <class CombinedFunctorReducerType, class... Properties>

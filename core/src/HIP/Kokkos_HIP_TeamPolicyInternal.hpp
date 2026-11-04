@@ -385,6 +385,248 @@ class TeamPolicyInternal<HIP, Properties...>
   }
 };
 
+template <unsigned rank_, typename... Properties>
+class TeamPolicyInternal<
+    Kokkos::Rank<rank_, Kokkos::Iterate::Default, Kokkos::Iterate::Default>,
+    HIP, Properties...> : public TeamPolicyInternal<HIP, Properties...> {
+ public:
+  using execution_policy = TeamPolicyInternal;
+  using base_policy      = TeamPolicyInternal<HIP, Properties...>;
+  using Rank =
+      Kokkos::Rank<rank_, Kokkos::Iterate::Default, Kokkos::Iterate::Default>;
+  using team_policy = MDTeamPolicy<Rank, Properties...>;
+
+  using traits = PolicyTraits<Rank, Properties...>;
+
+  // FIXME:
+  template <typename ExecSpace, typename... OtherProperties>
+  friend class TeamPolicyInternal;
+
+  static constexpr unsigned rank = rank_;
+
+ private:
+  using array_type = Kokkos::Array<int, rank>;
+
+  static int compute_league_size(const array_type& league_sizes) {
+    int res = 1;
+    for (unsigned i = 0; i < rank; i++) {
+      res *= league_sizes[i];
+    }
+    return res;
+  }
+
+  array_type m_league_sizes;
+
+ public:
+  using execution_space = HIP;
+
+  template <class... OtherProperties>
+  TeamPolicyInternal(TeamPolicyInternal<Rank, OtherProperties...> const& p)
+      : base_policy(
+            static_cast<TeamPolicyInternal<OtherProperties...> const&>(p)) {
+    m_league_sizes = p.m_league_sizes;
+  }
+
+  inline int league_size() const { return base_policy::league_size(); }
+  inline int league_size(int dim) const {
+    return m_league_sizes[dim]; /* FIXME: bounds checking? */
+  }
+  inline const array_type& league_sizes() const { return m_league_sizes; }
+
+  template <typename FunctorType>
+  int team_size_max(FunctorType const& f, ParallelForTag const&) const {
+    using closure_type = Impl::ParallelFor<FunctorType, team_policy>;
+
+    return base_policy::template internal_team_size_common<BlockType::Max,
+                                                           closure_type, void>(
+        f);
+  }
+
+  template <class FunctorType>
+  inline int team_size_max(const FunctorType& f,
+                           const ParallelReduceTag&) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, FunctorType, void>;
+    using closure_type = Impl::ParallelReduce<
+        CombinedFunctorReducer<FunctorType,
+                               typename functor_analysis_type::Reducer>,
+        team_policy, Kokkos::HIP>;
+    return base_policy::template internal_team_size_common<
+        BlockType::Max, closure_type,
+        typename functor_analysis_type::value_type>(f);
+  }
+
+  template <typename FunctorType, typename ReducerType>
+  inline int team_size_max(const FunctorType& f, const ReducerType& reducer,
+                           const ParallelReduceTag& tag) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, ReducerType, void>;
+    return team_size_max_internal(
+        f, typename functor_analysis_type::Reducer{reducer}, tag);
+  }
+
+  template <typename FunctorType, typename ReducerType>
+  inline int team_size_max_internal(const FunctorType& f, const ReducerType&,
+                                    const ParallelReduceTag&) const {
+    using closure_type =
+        Impl::ParallelReduce<CombinedFunctorReducer<FunctorType, ReducerType>,
+                             team_policy, Kokkos::HIP>;
+    return base_policy::template internal_team_size_common<
+        BlockType::Max, closure_type, typename ReducerType::value_type>(f);
+  }
+
+  template <typename FunctorType>
+  int team_size_recommended(FunctorType const& f, ParallelForTag const&) const {
+    using closure_type = Impl::ParallelFor<FunctorType, team_policy>;
+
+    return base_policy::template internal_team_size_common<BlockType::Preferred,
+                                                           closure_type, void>(
+        f);
+  }
+
+  template <typename FunctorType>
+  inline int team_size_recommended(FunctorType const& f,
+                                   ParallelReduceTag const&) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, FunctorType, void>;
+    using closure_type = Impl::ParallelReduce<
+        CombinedFunctorReducer<FunctorType,
+                               typename functor_analysis_type::Reducer>,
+        team_policy, Kokkos::HIP>;
+    return base_policy::template internal_team_size_common<
+        BlockType::Preferred, closure_type,
+        typename functor_analysis_type::value_type>(f);
+  }
+
+  template <typename FunctorType, typename ReducerType>
+  int team_size_recommended(const FunctorType& f, const ReducerType& reducer,
+                            const ParallelReduceTag& tag) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, ReducerType, void>;
+    return team_size_recommended_internal(
+        f, typename functor_analysis_type::Reducer{reducer}, tag);
+  }
+
+  template <typename FunctorType, typename ReducerType>
+  int team_size_recommended_internal(const FunctorType& f, const ReducerType&,
+                                     const ParallelReduceTag&) const {
+    using closure_type =
+        Impl::ParallelReduce<CombinedFunctorReducer<FunctorType, ReducerType>,
+                             team_policy, Kokkos::HIP>;
+    return base_policy::template internal_team_size_common<
+        BlockType::Preferred, closure_type, typename ReducerType::value_type>(
+        f);
+  }
+
+  TeamPolicyInternal() : base_policy(), m_league_sizes{} {}
+
+  /** \brief  Specify league size, request team size */
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     int team_size_request, int vector_length_request = 1)
+      : base_policy(space, compute_league_size(league_sizes), team_size_request,
+                    vector_length_request),
+        m_league_sizes(league_sizes) {}
+
+  /** \brief  Specify league size, request team size */
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(std::move(space), league_sizes, -1,
+                           vector_length_request) {}
+  // FLAG
+  /** \brief  Specify league size and team size, request vector length*/
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     int team_size_request,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+                     )
+      : TeamPolicyInternal(std::move(space), league_sizes, team_size_request,
+                           -1)
+
+  {}
+
+  /** \brief  Specify league size, request team size and vector length*/
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+
+                     )
+      : TeamPolicyInternal(std::move(space), league_sizes, -1, -1)
+
+  {}
+
+  TeamPolicyInternal(const array_type& league_sizes, int team_size_request,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes,
+                           team_size_request, vector_length_request) {}
+
+  TeamPolicyInternal(const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes, -1,
+                           vector_length_request) {}
+
+  /** \brief  Specify league size and team size, request vector length*/
+  TeamPolicyInternal(const array_type& league_sizes, int team_size_request,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+
+                     )
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes,
+                           team_size_request, -1)
+
+  {}
+
+  /** \brief  Specify league size, request team size and vector length*/
+  TeamPolicyInternal(const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+
+                     )
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes, -1,
+                           -1) {}
+
+  TeamPolicyInternal(const PolicyUpdate, const TeamPolicyInternal& other,
+                     typename traits::execution_space space)
+      : TeamPolicyInternal(other) {
+    this->m_space = std::move(space);
+  }
+
+  TeamPolicyInternal& set_chunk_size(typename traits::index_type chunk_size_) {
+    base_policy::set_chunk_size(chunk_size_);
+    return *this;
+  }
+
+  /** \brief set per team scratch size for a specific level of the scratch
+   * hierarchy */
+  TeamPolicyInternal& set_scratch_size(int level,
+                                       PerTeamValue const& per_team) {
+    base_policy::set_scratch_size(level, per_team);
+    return *this;
+  }
+
+  /** \brief set per thread scratch size for a specific level of the scratch
+   * hierarchy */
+  TeamPolicyInternal& set_scratch_size(int level,
+                                       PerThreadValue const& per_thread) {
+    base_policy::set_scratch_size(level, per_thread);
+    return *this;
+  }
+
+  /** \brief set per thread and per team scratch size for a specific level of
+   * the scratch hierarchy */
+  TeamPolicyInternal& set_scratch_size(int level, PerTeamValue const& per_team,
+                                       PerThreadValue const& per_thread) {
+    base_policy::set_scratch_size(level, per_team, per_thread);
+    return *this;
+  }
+
+  using member_type =
+      Kokkos::Impl::MDTeamMember<rank, typename base_policy::member_type>;
+};
+
 __device__ inline int64_t hip_get_scratch_index(HIP::size_type league_size,
                                                 int32_t* scratch_locks,
                                                 size_t num_scratch_locks) {

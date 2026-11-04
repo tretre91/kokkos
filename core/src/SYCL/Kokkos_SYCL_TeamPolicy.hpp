@@ -463,4 +463,372 @@ class Kokkos::Impl::TeamPolicyInternal<Kokkos::SYCL, Properties...>
   }
 };
 
+template <unsigned rank_, typename... Properties>
+class Kokkos::Impl::TeamPolicyInternal<
+    Kokkos::Rank<rank_, Kokkos::Iterate::Default, Kokkos::Iterate::Default>,
+    Kokkos::SYCL, Properties...>
+    : public TeamPolicyInternal<Kokkos::SYCL, Properties...> {
+ public:
+  using execution_policy = TeamPolicyInternal;
+
+  using base_policy = TeamPolicyInternal<SYCL, Properties...>;
+  using Rank =
+      Kokkos::Rank<rank_, Kokkos::Iterate::Default, Kokkos::Iterate::Default>;
+  using team_policy = MDTeamPolicy<Rank, Properties...>;
+
+  using traits = PolicyTraits<Rank, Properties...>;
+
+  // FIXME:
+  template <typename ExecSpace, typename... OtherProperties>
+  friend class TeamPolicyInternal;
+
+  static constexpr unsigned rank = rank_;
+
+ private:
+  using array_type = Kokkos::Array<int, rank>;
+
+  static int compute_league_size(const array_type& league_sizes) {
+    int res = 1;
+    for (unsigned i = 0; i < rank; i++) {
+      res *= league_sizes[i];
+    }
+    return res;
+  }
+
+  array_type m_league_sizes;
+
+ public:
+  using execution_space = SYCL;
+
+  template <class... OtherProperties>
+  TeamPolicyInternal(TeamPolicyInternal<Rank, OtherProperties...> const& p)
+      : base_policy(
+            static_cast<TeamPolicyInternal<OtherProperties...> const&>(p)) {
+    m_league_sizes = p.m_league_sizes;
+  }
+
+  inline int league_size() const { return base_policy::league_size(); }
+  inline int league_size(int dim) const {
+    return m_league_sizes[dim]; /* FIXME: bounds checking? */
+  }
+  inline const array_type& league_sizes() const { return m_league_sizes; }
+
+  template <typename FunctorType>
+  int team_size_max(FunctorType const& f, ParallelForTag const&) const {
+    return internal_team_size_max_for(f);
+  }
+
+  template <class FunctorType>
+  inline int team_size_max(const FunctorType& f,
+                           const ParallelReduceTag& tag) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, FunctorType, void>;
+    typename functor_analysis_type::Reducer reducer(f);
+    return team_size_max_internal(f, reducer, tag);
+  }
+
+  template <class FunctorType, class ReducerType>
+  inline int team_size_max(const FunctorType& f, const ReducerType& r,
+                           const ParallelReduceTag& tag) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, ReducerType, void>;
+    typename functor_analysis_type::Reducer reducer(r);
+    return team_size_max_internal(f, reducer, tag);
+  }
+
+  template <class FunctorType, class ReducerType>
+  int team_size_max_internal(FunctorType const& f, ReducerType const& r,
+                             ParallelReduceTag const&) const {
+    return internal_team_size_max_reduce<typename ReducerType::value_type>(
+        CombinedFunctorReducer<FunctorType, ReducerType>(f, r));
+  }
+
+  template <typename FunctorType>
+  int team_size_recommended(FunctorType const& f, ParallelForTag const&) const {
+    return internal_team_size_recommended_for(f);
+  }
+
+  template <typename FunctorType>
+  inline int team_size_recommended(FunctorType const& f,
+                                   ParallelReduceTag const& tag) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, FunctorType, void>;
+    typename functor_analysis_type::Reducer reducer(f);
+    return team_size_recommended_internal(f, reducer, tag);
+  }
+
+  template <class FunctorType, class ReducerType>
+  int team_size_recommended(FunctorType const& f, ReducerType const& r,
+                            ParallelReduceTag const& tag) const {
+    using functor_analysis_type =
+        Impl::FunctorAnalysis<Impl::FunctorPatternInterface::REDUCE,
+                              TeamPolicyInternal, ReducerType, void>;
+    typename functor_analysis_type::Reducer reducer(r);
+    return team_size_recommended_internal(f, reducer, tag);
+  }
+
+  template <class FunctorType, class ReducerType>
+  int team_size_recommended_internal(FunctorType const& f, ReducerType const& r,
+                                     ParallelReduceTag const&) const {
+    return internal_team_size_recommended_reduce<
+        typename ReducerType::value_type>(
+        CombinedFunctorReducer<FunctorType, ReducerType>(f, r));
+  }
+
+  TeamPolicyInternal() : base_policy(), m_league_sizes{} {}
+
+  /** \brief  Specify league size, request team size */
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     int team_size_request, int vector_length_request = 1)
+      : base_policy(space, compute_league_size(league_sizes), team_size_request,
+                    vector_length_request),
+        m_league_sizes(league_sizes) {}
+
+  /** \brief  Specify league size, request team size */
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(std::move(space), league_sizes, -1,
+                           vector_length_request) {}
+  // FLAG
+  /** \brief  Specify league size and team size, request vector length*/
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     int team_size_request,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+                     )
+      : TeamPolicyInternal(std::move(space), league_sizes, team_size_request,
+                           -1) {}
+
+  /** \brief  Specify league size, request team size and vector length*/
+  TeamPolicyInternal(execution_space space, const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+
+                     )
+      : TeamPolicyInternal(std::move(space), league_sizes, -1, -1)
+
+  {}
+
+  TeamPolicyInternal(const array_type& league_sizes, int team_size_request,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes,
+                           team_size_request, vector_length_request) {}
+
+  TeamPolicyInternal(const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes, -1,
+                           vector_length_request) {}
+
+  /** \brief  Specify league size and team size, request vector length*/
+  TeamPolicyInternal(const array_type& league_sizes, int team_size_request,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+
+                     )
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes,
+                           team_size_request, -1)
+
+  {}
+
+  /** \brief  Specify league size, request team size and vector length*/
+  TeamPolicyInternal(const array_type& league_sizes,
+                     const Kokkos::AUTO_t& /* team_size_request */,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+
+                     )
+      : TeamPolicyInternal(typename traits::execution_space(), league_sizes, -1,
+                           -1) {}
+
+  TeamPolicyInternal(const PolicyUpdate, const TeamPolicyInternal& other,
+                     typename traits::execution_space space)
+      : TeamPolicyInternal(other) {
+    this->m_space = std::move(space);
+  }
+
+  TeamPolicyInternal& set_chunk_size(typename traits::index_type chunk_size_) {
+    base_policy::set_chunk_size(chunk_size_);
+    return *this;
+  }
+
+  /** \brief set per team scratch size for a specific level of the scratch
+   * hierarchy */
+  TeamPolicyInternal& set_scratch_size(int level,
+                                       PerTeamValue const& per_team) {
+    base_policy::set_scratch_size(level, per_team);
+    return *this;
+  }
+
+  /** \brief set per thread scratch size for a specific level of the scratch
+   * hierarchy */
+  TeamPolicyInternal& set_scratch_size(int level,
+                                       PerThreadValue const& per_thread) {
+    base_policy::set_scratch_size(level, per_thread);
+    return *this;
+  }
+
+  /** \brief set per thread and per team scratch size for a specific level of
+   * the scratch hierarchy */
+  TeamPolicyInternal& set_scratch_size(int level, PerTeamValue const& per_team,
+                                       PerThreadValue const& per_thread) {
+    base_policy::set_scratch_size(level, per_team, per_thread);
+    return *this;
+  }
+
+  using member_type =
+      Kokkos::Impl::MDTeamMember<rank, Kokkos::Impl::SYCLTeamMember>;
+
+ protected:
+  template <class FunctorType>
+  int internal_team_size_max_for(const FunctorType& f) const {
+    // nested_reducer_memsize = (sizeof(double) * (m_team_size + 2)
+    // custom: m_team_scratch_size[0] + m_thread_scratch_size[0] * m_team_size
+    // total:
+    // 2*sizeof(double)+m_team_scratch_size[0]
+    // + m_team_size(sizeof(double)+m_thread_scratch_size[0])
+    const int max_threads_for_memory =
+        (base_policy::space()
+             .impl_internal_space_instance()
+             ->m_maxShmemPerBlock -
+         2 * sizeof(double) - base_policy::team_scratch_size(0)) /
+        (sizeof(double) + base_policy::thread_scratch_size(0));
+
+    auto& instance = *base_policy::space().impl_internal_space_instance();
+    auto& indirectKernelMem = instance.get_indirect_kernel_mem();
+    auto functor_wrapper =
+        Impl::make_sycl_function_wrapper(f, indirectKernelMem);
+    sycl::queue& q = base_policy::space().sycl_queue();
+
+    int max_threads_kernel = 0;
+    auto event             = q.submit([&](sycl::handler& cgh) {
+      // minimal local accessor to create the same lambda type used at
+      // launch-time
+      sycl::local_accessor<char, 1> team_scratch_memory_L0(sycl::range<1>(1),
+                                                                       cgh);
+
+      const auto shmem_begin       = 0u;
+      const size_t scratch_size[2] = {0, 0};
+
+      // Create a dummy kernel mirroring the TeamPolicy parallel_for
+      // implementation for introspection. The kernel call has an empty range
+      // and hence the kernel isn't actually executed but the kernel still needs
+      // to be submitted for it to be introspected.
+      using ParallelForImpl =
+          Impl::ParallelFor<FunctorType, team_policy, Kokkos::SYCL>;
+      auto lambda = ParallelForImpl::create_team_for_lambda(
+          functor_wrapper, team_scratch_memory_L0, scratch_size, shmem_begin,
+          /*global_scratch_ptr*/ nullptr, Kokkos::Array<int, rank>{});
+
+      sycl::kernel_id functor_kernel_id =
+          sycl::get_kernel_id<decltype(lambda)>();
+      auto kernel_bundle =
+          sycl::get_kernel_bundle<sycl::bundle_state::executable>(
+              q.get_context(), std::vector{functor_kernel_id});
+      auto kernel = kernel_bundle.get_kernel(functor_kernel_id);
+      max_threads_kernel =
+          kernel.get_info<sycl::info::kernel_device_specific::work_group_size>(
+              q.get_device());
+
+      cgh.parallel_for(
+          sycl::nd_range<2>(sycl::range<2>(0, 0), sycl::range<2>(1, 1)),
+          lambda);
+    });
+    functor_wrapper.register_event(event);
+
+    return std::min({max_threads_kernel, max_threads_for_memory}) /
+           base_policy::impl_vector_length();
+  }
+
+  template <class ValueType, class CombinedFunctorReducerType>
+  int internal_team_size_max_reduce(const CombinedFunctorReducerType& f) const {
+    using Analysis =
+        FunctorAnalysis<FunctorPatternInterface::REDUCE, TeamPolicyInternal,
+                        CombinedFunctorReducerType, ValueType>;
+    using value_type      = typename Analysis::value_type;
+    const int value_count = Analysis::value_count(f);
+
+    // nested_reducer_memsize = (sizeof(double) * (m_team_size + 2)
+    // reducer_memsize = sizeof(value_type) * m_team_size * value_count
+    // custom: m_team_scratch_size[0] + m_thread_scratch_size[0] * m_team_size
+    // total:
+    // 2*sizeof(double)+m_team_scratch_size[0]
+    // + m_team_size(sizeof(double)+sizeof(value_type)*value_count
+    //               +m_thread_scratch_size[0])
+    const int max_threads_for_memory =
+        (base_policy::space()
+             .impl_internal_space_instance()
+             ->m_maxShmemPerBlock -
+         2 * sizeof(double) - base_policy::team_scratch_size(0)) /
+        (sizeof(double) + sizeof(value_type) * value_count +
+         base_policy::thread_scratch_size(0));
+
+    auto& instance = *base_policy::space().impl_internal_space_instance();
+    auto& indirectKernelMem = instance.get_indirect_kernel_mem();
+    auto functor_wrapper =
+        Impl::make_sycl_function_wrapper(f, indirectKernelMem);
+    sycl::queue& q = base_policy::space().sycl_queue();
+
+    int max_threads_kernel = 0;
+    auto event             = q.submit([&](sycl::handler& cgh) {
+      // minimal local accessor to form the expected lambda type
+      sycl::local_accessor<char, 1> team_scratch_memory_L0(sycl::range<1>(1),
+                                                                       cgh);
+
+      const auto shmem_begin       = 0u;
+      const size_t scratch_size[2] = {0, 0};
+
+      // Create a dummy kernel using the actual TeamPolicy parallel_reduce
+      // implementation for introspection. The kernel call has an empty range
+      // and hence the kernel isn't actually executed but the kernel still needs
+      // to be submitted for it to be introspected.
+      auto lambda = Impl::ParallelReduce<CombinedFunctorReducerType,
+                                         team_policy, Kokkos::SYCL>::
+          create_team_reduction_lambda(
+              /* local_mem */ {1, cgh},
+              /* results_ptr */ nullptr,
+              /* device_accessible_result_ptr */ nullptr, functor_wrapper,
+              value_count,
+              /*league_size*/ 0, team_scratch_memory_L0, scratch_size,
+              shmem_begin,
+              /*global_scratch_ptr*/ nullptr,
+              /*num_teams_done*/ {1, cgh},
+              /*scratch_flags*/ nullptr);
+
+      sycl::kernel_id functor_kernel_id =
+          sycl::get_kernel_id<decltype(lambda)>();
+      auto kernel_bundle =
+          sycl::get_kernel_bundle<sycl::bundle_state::executable>(
+              q.get_context(), std::vector{functor_kernel_id});
+      auto kernel = kernel_bundle.get_kernel(functor_kernel_id);
+      max_threads_kernel =
+          kernel.get_info<sycl::info::kernel_device_specific::work_group_size>(
+              q.get_device());
+
+      cgh.parallel_for(
+          sycl::nd_range<2>(sycl::range<2>(0, 0), sycl::range<2>(1, 1)),
+          lambda);
+    });
+    functor_wrapper.register_event(event);
+
+    return std::min({max_threads_kernel, max_threads_for_memory}) /
+           base_policy::impl_vector_length();
+  }
+
+  template <class FunctorType>
+  int internal_team_size_recommended_for(const FunctorType& f) const {
+    // FIXME_SYCL improve
+    return Kokkos::Experimental::bit_floor_builtin<unsigned>(
+        internal_team_size_max_for(f));
+  }
+
+  template <class ValueType, class FunctorType>
+  int internal_team_size_recommended_reduce(const FunctorType& f) const {
+    // FIXME_SYCL improve
+    return Kokkos::Experimental::bit_floor_builtin<unsigned>(
+        internal_team_size_max_reduce<ValueType>(f));
+  }
+};
+
 #endif

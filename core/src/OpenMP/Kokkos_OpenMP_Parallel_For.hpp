@@ -408,6 +408,157 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
   }
 };
 
+template <class FunctorType, class P, class... Properties>
+class ParallelFor<FunctorType, Kokkos::MDTeamPolicy<P, Properties...>,
+                  Kokkos::OpenMP> {
+ private:
+  enum { TEAM_REDUCE_SIZE = 512 };
+
+  using MDPolicy = Kokkos::MDTeamPolicy<P, Properties...>;
+  using Policy   = TeamPolicyInternal<P, Kokkos::OpenMP, Properties...>;
+  using WorkTag  = typename Policy::work_tag;
+  using SchedTag = typename Policy::schedule_type::type;
+  using Member   = typename Policy::member_type;
+
+  static constexpr unsigned rank = MDPolicy::rank;
+
+  OpenMPInternal* m_instance;
+  const FunctorType m_functor;
+  const Policy m_policy;
+  const size_t m_shmem_size;
+
+  template <class TagType>
+  inline static std::enable_if_t<(std::is_void_v<TagType>)> exec_team(
+      const FunctorType& functor, HostThreadTeamData& data,
+      const int league_rank_begin, const int league_rank_end,
+      const int league_size, const Kokkos::Array<int, rank>& league_sizes) {
+    for (int r = league_rank_begin; r < league_rank_end;) {
+      functor(Member(league_sizes, data, r, league_size));
+
+      if (++r < league_rank_end) {
+        // Don't allow team members to lap one another
+        // so that they don't overwrite shared memory.
+        if (data.team_rendezvous()) {
+          data.team_rendezvous_release();
+        }
+      }
+    }
+  }
+
+  template <class TagType>
+  inline static std::enable_if_t<(!std::is_void_v<TagType>)> exec_team(
+      const FunctorType& functor, HostThreadTeamData& data,
+      const int league_rank_begin, const int league_rank_end,
+      const int league_size, const Kokkos::Array<int, rank>& league_sizes) {
+    const TagType t{};
+
+    for (int r = league_rank_begin; r < league_rank_end;) {
+      functor(t, Member(league_sizes, data, r, league_size));
+
+      if (++r < league_rank_end) {
+        // Don't allow team members to lap one another
+        // so that they don't overwrite shared memory.
+        if (data.team_rendezvous()) {
+          data.team_rendezvous_release();
+        }
+      }
+    }
+  }
+
+ public:
+  inline void execute() const {
+    enum { is_dynamic = std::is_same_v<SchedTag, Kokkos::Dynamic> };
+
+    const size_t pool_reduce_size  = 0;  // Never shrinks
+    const size_t team_reduce_size  = TEAM_REDUCE_SIZE * m_policy.team_size();
+    const size_t team_shared_size  = m_shmem_size;
+    const size_t thread_local_size = 0;  // Never shrinks
+
+    // Serialize kernels on the same execution space instance
+    std::lock_guard<std::mutex> lock(m_instance->m_instance_mutex);
+
+    m_instance->resize_thread_data(pool_reduce_size, team_reduce_size,
+                                   team_shared_size, thread_local_size);
+
+    if (execute_in_serial(m_policy.space())) {
+      ParallelFor::template exec_team<WorkTag>(
+          m_functor, *(m_instance->get_thread_data()), 0,
+          m_policy.league_size(), m_policy.league_size(),
+          m_policy.league_sizes());
+
+      return;
+    }
+
+#pragma omp parallel num_threads(m_instance->thread_pool_size())
+    {
+      HostThreadTeamData& data = *(m_instance->get_thread_data());
+
+      const int active = data.organize_team(m_policy.team_size());
+
+      if (active) {
+        data.set_work_partition(
+            m_policy.league_size(),
+            (0 < m_policy.chunk_size() ? m_policy.chunk_size()
+                                       : m_policy.team_iter()));
+      }
+
+      if (is_dynamic) {
+        // Must synchronize to make sure each team has set its
+        // partition before beginning the work stealing loop.
+        if (data.pool_rendezvous()) data.pool_rendezvous_release();
+      }
+
+      if (active) {
+        std::pair<int64_t, int64_t> range(0, 0);
+
+        do {
+          range = is_dynamic ? data.get_work_stealing_chunk()
+                             : data.get_work_partition();
+
+          ParallelFor::template exec_team<WorkTag>(
+              m_functor, data, range.first, range.second,
+              m_policy.league_size(), m_policy.league_sizes());
+
+        } while (is_dynamic && 0 <= range.first);
+      }
+
+      data.disband_team();
+    }
+  }
+
+  inline ParallelFor(const FunctorType& arg_functor, const Policy& arg_policy)
+      : m_instance(nullptr),
+        m_functor(arg_functor),
+        m_policy(arg_policy),
+        m_shmem_size(m_policy.scratch_size(0) + m_policy.scratch_size(1) +
+                     FunctorTeamShmemSize<FunctorType>::value(
+                         m_functor, m_policy.team_size())) {
+    m_instance = m_policy.space().impl_internal_space_instance();
+
+    if ((m_policy.scratch_size(0) + FunctorTeamShmemSize<FunctorType>::value(
+                                        m_functor, m_policy.team_size())) >
+        static_cast<size_t>(TeamPolicy<Kokkos::OpenMP>::scratch_size_max(0))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<OpenMP>: Requested too much scratch "
+               "memory on level 0. Requested: "
+            << m_policy.scratch_size(0) +
+                   FunctorTeamShmemSize<FunctorType>::value(
+                       m_functor, m_policy.team_size())
+            << ", Maximum: " << TeamPolicy<Kokkos::OpenMP>::scratch_size_max(0);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+    if (m_policy.scratch_size(1) >
+        static_cast<size_t>(TeamPolicy<Kokkos::OpenMP>::scratch_size_max(1))) {
+      std::stringstream error;
+      error << "Kokkos::parallel_for<OpenMP>: Requested too much scratch "
+               "memory on level 1. Requested: "
+            << m_policy.scratch_size(1)
+            << ", Maximum: " << TeamPolicy<Kokkos::OpenMP>::scratch_size_max(1);
+      Kokkos::Impl::throw_runtime_exception(error.str().c_str());
+    }
+  }
+};
+
 }  // namespace Impl
 }  // namespace Kokkos
 
