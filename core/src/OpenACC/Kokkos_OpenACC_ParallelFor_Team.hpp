@@ -49,6 +49,47 @@ class Kokkos::Impl::ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
       : m_functor(arg_functor), m_policy(std::move(arg_policy)) {}
 };
 
+template <class FunctorType, class... Properties>
+class Kokkos::Impl::ParallelFor<FunctorType,
+                                Kokkos::MDTeamPolicy<Properties...>,
+                                Kokkos::Experimental::OpenACC> {
+ private:
+  using MDPolicy = Kokkos::MDTeamMDTeamPolicy<Properties...>;
+  using Policy   = Kokkos::Impl::TeamPolicyInternal<
+      typename MDPolicy::traits::iteration_pattern,
+      Kokkos::Experimental::OpenACC, Properties...>;
+  Kokkos::Experimental::Impl::FunctorAdapter<
+      FunctorType, Policy, Kokkos::Experimental::Impl::RoutineClause::seq>
+      m_functor;
+  using Member = typename Policy::member_type;
+
+  const Policy m_policy;
+
+ public:
+  inline void execute() const {
+    auto league_size   = m_policy.league_size();
+    auto league_sizes  = m_policy.league_sizes();
+    auto team_size     = m_policy.team_size();
+    auto vector_length = m_policy.impl_vector_length();
+
+    int const async_arg = m_policy.space().acc_async_queue();
+
+    auto const a_functor(m_functor);
+
+#pragma acc parallel loop gang vector num_gangs(league_size) \
+    vector_length(team_size* vector_length) copyin(a_functor) async(async_arg)
+    for (int i = 0; i < league_size * team_size * vector_length; i++) {
+      int league_id = i / (team_size * vector_length);
+      typename Policy::member_type team(league_sizes, league_id, league_size,
+                                        team_size, vector_length);
+      a_functor(team);
+    }
+  }
+
+  inline ParallelFor(const FunctorType& arg_functor, Policy arg_policy)
+      : m_functor(arg_functor), m_policy(std::move(arg_policy)) {}
+};
+
 namespace Kokkos {
 
 // Hierarchical Parallelism -> Team thread level implementation
@@ -144,6 +185,47 @@ class Kokkos::Impl::ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
       int league_id = i;
       typename Policy::member_type team(league_id, league_size, team_size,
                                         vector_length);
+      a_functor(team);
+    }
+  }
+
+  inline ParallelFor(const FunctorType& arg_functor, Policy arg_policy)
+      : m_functor(arg_functor), m_policy(std::move(arg_policy)) {}
+};
+
+template <class FunctorType, class... Properties>
+class Kokkos::Impl::ParallelFor<FunctorType,
+                                Kokkos::MDTeamPolicy<Properties...>,
+                                Kokkos::Experimental::OpenACC> {
+ private:
+  using MDPolicy = Kokkos::MDTeamPolicy<Properties...>;
+  using Policy   = Kokkos::Impl::TeamPolicyInternal<
+      typename MDPolicy::traits::iteration_pattern,
+      Kokkos::Experimental::OpenACC, Properties...>;
+  Kokkos::Experimental::Impl::FunctorAdapter<
+      FunctorType, Policy, Kokkos::Experimental::Impl::RoutineClause::worker>
+      m_functor;
+  using Member = typename Policy::member_type;
+
+  const Policy m_policy;
+
+ public:
+  inline void execute() const {
+    auto league_size   = m_policy.league_size();
+    auto league_sizes  = m_policy.league_sizes();
+    auto team_size     = m_policy.team_size();
+    auto vector_length = m_policy.impl_vector_length();
+
+    int const async_arg = m_policy.space().acc_async_queue();
+
+    auto const a_functor(m_functor);
+
+#pragma acc parallel loop gang num_gangs(league_size) num_workers(team_size) \
+    vector_length(vector_length) copyin(a_functor) async(async_arg)
+    for (int i = 0; i < league_size; i++) {
+      int league_id = i;
+      typename Policy::member_type team(league_sizes, league_id, league_size,
+                                        team_size, vector_length);
       a_functor(team);
     }
   }

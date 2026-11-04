@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 // SPDX-FileCopyrightText: Copyright Contributors to the Kokkos project
 
+#include <concepts>
+#include "Kokkos_Array.hpp"
 #ifndef KOKKOS_IMPL_PUBLIC_INCLUDE
 #include <Kokkos_Macros.hpp>
 static_assert(false,
@@ -796,6 +798,790 @@ TeamPolicy(ES const&, int, Kokkos::AUTO_t const&, Kokkos::AUTO_t const&)
 template <typename ES,
           typename = std::enable_if_t<Kokkos::is_execution_space_v<ES>>>
 TeamPolicy(ES const&, int, int, Kokkos::AUTO_t const&) -> TeamPolicy<ES>;
+
+namespace Impl {
+
+// template <unsigned rank, class BaseMember>
+// class MDTeamMember {
+//  private:
+//   using array_type = Kokkos::Array<int, rank>;
+//
+//   array_type m_league_ranks;
+//   array_type m_league_sizes;
+//   BaseMember m_base_member;
+//
+//  public:
+//   using scratch_memory_space = typename BaseMember::scratch_memory_space;
+//   using execution_space      = typename BaseMember::execution_space;
+//   using team_handle          = MDTeamMember;
+//
+//   template <class... Args>
+//   constexpr MDTeamMember(const array_type& league_ranks,
+//                          const array_type& league_sizes, Args&&... args)
+//       : m_league_ranks(league_ranks),
+//         m_league_sizes(league_sizes),
+//         m_base_member(args...) {}
+//
+//   template <class... Args>
+//   constexpr MDTeamMember(const array_type& league_sizes, Args&&... args)
+//       : m_league_sizes(league_sizes), m_base_member(args...) {
+//     int flat_rank = m_base_member.league_rank();
+//     for (unsigned i = 0; i < rank; i++) {
+//       m_league_ranks[i] = flat_rank % league_sizes[i];
+//       flat_rank /= league_sizes[i];
+//     }
+//   }
+//
+//   //----------------------------------------
+//
+//   KOKKOS_INLINE_FUNCTION
+//   int team_rank() const noexcept { return m_base_member.team_rank(); }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   int team_size() const noexcept { return m_base_member.team_size(); }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   int league_rank() const noexcept { return m_base_member.league_rank(); }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   int league_rank(int idx) const noexcept { return m_league_ranks[idx]; }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   const array_type& league_ranks() const noexcept { return m_league_ranks; }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   int league_size() const noexcept { return m_base_member.league_size(); }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   int league_size(int idx) const noexcept { return m_league_sizes[idx]; }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   const array_type& league_sizes() const noexcept { return m_league_sizes; }
+//
+//   //----------------------------------------
+//
+//   KOKKOS_INLINE_FUNCTION
+//   const scratch_memory_space& team_shmem() const {
+//     return m_base_member.team_shmem();
+//   }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   const scratch_memory_space& team_scratch(int level) const {
+//     return m_base_member.team_scratch(level);
+//   }
+//
+//   KOKKOS_INLINE_FUNCTION
+//   const scratch_memory_space& thread_scratch(int level) const {
+//     return m_base_member.thread_scratch(level);
+//   }
+//
+//   //--------------------------------------------------------------------------
+//   // Team collectives
+//   //--------------------------------------------------------------------------
+//
+//   KOKKOS_INLINE_FUNCTION void team_barrier() const noexcept {
+//     m_base_member.team_barrier();
+//   }
+//
+//   //--------------------------------------------------------------------------
+//
+//   template <typename T>
+//   KOKKOS_INLINE_FUNCTION void team_broadcast(
+//       T& value, const int source_team_rank) const noexcept {
+//     m_base_member.team_broadcast(value, source_team_rank);
+//   }
+//
+//   //--------------------------------------------------------------------------
+//
+//   template <class Closure, typename T>
+//   KOKKOS_INLINE_FUNCTION void team_broadcast(
+//       Closure const& f, T& value, const int source_team_rank) const noexcept
+//       {
+//     m_base_member.team_broadcast(f, value, source_team_rank);
+//   }
+//
+//   //--------------------------------------------------------------------------
+//   // team_reduce( Sum(result) );
+//   // team_reduce( Min(result) );
+//   // team_reduce( Max(result) );
+//
+//   template <Reducer ReducerType>
+//   KOKKOS_INLINE_FUNCTION void team_reduce(
+//       ReducerType const& reducer) const noexcept {
+//     m_base_member.team_reduce(reducer);
+//   }
+//
+//   template <Reducer ReducerType>
+//   KOKKOS_INLINE_FUNCTION void team_reduce(
+//       ReducerType const& reducer,
+//       typename ReducerType::value_type contribution) const noexcept {
+//     m_base_member.team_reduce(reducer, contribution);
+//   }
+//
+//   //--------------------------------------------------------------------------
+//
+//   template <typename T>
+//   KOKKOS_INLINE_FUNCTION T team_scan(T const& value,
+//                                      T* const global = nullptr) const
+//                                      noexcept {
+//     return m_base_member.team_scan(value, global);
+//   }
+// };
+
+template <unsigned rank, class BaseMember>
+class MDTeamMember : public BaseMember {
+ private:
+  using array_type = Kokkos::Array<int, rank>;
+
+  array_type m_league_ranks;
+  array_type m_league_sizes;
+  // BaseMember m_base_member;
+
+ public:
+  // using scratch_memory_space = typename BaseMember::scratch_memory_space;
+  // using execution_space      = typename BaseMember::execution_space;
+  using team_handle = MDTeamMember;
+
+  template <class... Args>
+  constexpr KOKKOS_FUNCTION MDTeamMember(const array_type& league_ranks,
+                                         const array_type& league_sizes,
+                                         Args&&... args)
+      : BaseMember(args...),
+        m_league_ranks(league_ranks),
+        m_league_sizes(league_sizes) {}
+
+  template <class... Args>
+  constexpr KOKKOS_FUNCTION MDTeamMember(const array_type& league_sizes,
+                                         Args&&... args)
+      : BaseMember(args...), m_league_sizes(league_sizes) {
+    int flat_rank = BaseMember::league_rank();
+    for (int i = rank - 1; i >= 0; i--) {
+      m_league_ranks[i] = flat_rank % league_sizes[i];
+      flat_rank /= league_sizes[i];
+    }
+  }
+
+  operator BaseMember() const { return static_cast<BaseMember>(*this); }
+
+  void update_league_ranks(int offset) {
+    int carry = offset;
+    for (int i = rank - 1; i >= 0 && carry != 0; i--) {
+      m_league_ranks[i] += carry;
+      carry = m_league_ranks[i] / m_league_sizes[i];
+      m_league_ranks[i] %= m_league_sizes[i];
+    }
+    // the last rank overflowing would mean that we iterated beyond the Policy's
+    // domain
+    KOKKOS_ASSERT(carry == 0);
+  }
+
+  //----------------------------------------
+
+  KOKKOS_INLINE_FUNCTION
+  int league_rank() const noexcept { return BaseMember::league_rank(); }
+
+  KOKKOS_INLINE_FUNCTION
+  int league_rank(int idx) const noexcept { return m_league_ranks[idx]; }
+
+  KOKKOS_INLINE_FUNCTION
+  const array_type& league_ranks() const noexcept { return m_league_ranks; }
+
+  KOKKOS_INLINE_FUNCTION
+  int league_size() const noexcept { return BaseMember::league_size(); }
+
+  KOKKOS_INLINE_FUNCTION
+  int league_size(int idx) const noexcept { return m_league_sizes[idx]; }
+
+  KOKKOS_INLINE_FUNCTION
+  const array_type& league_sizes() const noexcept { return m_league_sizes; }
+};
+
+// template <class ExecSpace, unsigned rank_, class... Properties>
+// class TeamPolicyInternal<
+//     Kokkos::Rank<rank_, Kokkos::Iterate::Default, Kokkos::Iterate::Default>,
+//     ExecSpace, Properties...> : public Impl::PolicyTraits<Properties...> {
+//   // template <class ExecSpace, class P, class... Properties>
+//   // requires (!std::is_void_v<typename Impl::PolicyTraits<P,
+//   // Properties...>::iteration_pattern>) class TeamPolicyInternal<P,
+//   ExecSpace,
+//   // Properties...> : public Impl::PolicyTraits<P, Properties...> {
+//  public:
+//   static constexpr unsigned rank = rank_;
+//
+//  private:
+//   using traits          = Impl::PolicyTraits<Properties...>;
+//   using base_policy     = TeamPolicyInternal<ExecSpace, Properties...>;
+//   using array_type      = Kokkos::Array<int, rank>;
+//   using execution_space = ExecSpace;
+//
+//   int compute_league_size(const array_type& league_sizes) {
+//     int res = 1;
+//     for (unsigned i = 0; i < rank; i++) {
+//       res *= league_sizes[i];
+//     }
+//     return res;
+//   }
+//
+//   array_type m_league_sizes;
+//   base_policy m_flat_policy;
+//
+//  public:
+//   const execution_space& space() const { return m_flat_policy.space(); }
+//
+//   template <class FunctorType>
+//   int team_size_max(const FunctorType& f, const ParallelForTag& t) const {
+//     return m_flat_policy.team_size_max(f, t);
+//   }
+//   template <class FunctorType>
+//   int team_size_max(const FunctorType& f, const ParallelReduceTag& t) const {
+//     return m_flat_policy.team_size_max(f, t);
+//   }
+//   template <class FunctorType, class ReducerType>
+//   int team_size_max(const FunctorType& f, const ReducerType& reducer,
+//                     const ParallelReduceTag& t) const {
+//     return m_flat_policy.team_size_max(f, reducer, t);
+//   }
+//   template <class FunctorType>
+//   int team_size_recommended(const FunctorType& f,
+//                             const ParallelForTag& t) const {
+//     return m_flat_policy.team_size_recommended(f, t);
+//   }
+//   template <class FunctorType>
+//   int team_size_recommended(const FunctorType& f,
+//                             const ParallelReduceTag& t) const {
+//     return m_flat_policy.team_size_recommended(f, t);
+//   }
+//   template <class FunctorType, class ReducerType>
+//   int team_size_recommended(const FunctorType& f, const ReducerType& reducer,
+//                             const ParallelReduceTag& t) const {
+//     return m_flat_policy.team_size_recommended(f, reducer, t);
+//   }
+//
+//   //----------------------------------------
+//
+//   inline int team_size() const { return m_flat_policy.team_size(); }
+//   inline bool impl_auto_team_size() const {
+//     return m_flat_policy.impl_auto_team_size();
+//   }
+//   inline bool impl_auto_vector_length() const {
+//     return m_flat_policy.impl_auto_vector_length();
+//   }
+//   inline void impl_set_team_size(size_t team_size) {
+//     m_flat_policy.impl_set_team_size(team_size);
+//   }
+//   inline void impl_set_vector_length(size_t vector_length) {
+//     m_flat_policy.impl_set_vector_length(vector_length);
+//   }
+//   inline int league_size() const { return m_flat_policy.league_size(); }
+//   inline int league_size(int dim) const {
+//     return m_league_sizes[dim]; /* FIXME: bounds checking? */
+//   }
+//   inline const array_type& league_sizes() const { return m_league_sizes; }
+//
+//   inline size_t scratch_size(const int& level, int team_size = -1) const {
+//     return m_flat_policy.scratch_size(level, team_size);
+//   }
+//   inline size_t team_scratch_size(int level) const {
+//     return m_flat_policy.team_scratch_size(level);
+//   }
+//   inline size_t thread_scratch_size(int level) const {
+//     return m_flat_policy.thread_scratch_size(level);
+//   }
+//
+//   inline int impl_vector_length() const {
+//     return m_flat_policy.impl_vector_length();
+//   }
+//   inline static int vector_length_max() {
+//     return base_policy::vector_length_max();
+//   }
+//
+//   inline static int scratch_size_max(int level) {
+//     return base_policy::scratch_size_max(level);
+//   }
+//
+//   /** \brief  Specify league size, request team size */
+//   TeamPolicyInternal(const execution_space& space,
+//                      const array_type& league_sizes_request,
+//                      int team_size_request, int vector_length_request = 1)
+//       : m_league_sizes(league_sizes_request),
+//         m_flat_policy(space, compute_league_size(league_sizes_request),
+//                       team_size_request, vector_length_request) {}
+//
+//   TeamPolicyInternal(const execution_space& space,
+//                      const array_type& league_sizes_request,
+//                      const Kokkos::AUTO_t& /**team_size_request*/,
+//                      int vector_length_request = 1)
+//       : TeamPolicyInternal(space, league_sizes_request, -1,
+//                            vector_length_request) {}
+//
+//   TeamPolicyInternal(const execution_space& space,
+//                      const array_type& league_sizes_request,
+//                      const Kokkos::AUTO_t& /* team_size_request */
+//                      ,
+//                      const Kokkos::AUTO_t& /* vector_length_request */
+//                      )
+//       : TeamPolicyInternal(space, league_sizes_request, -1, -1) {}
+//
+//   TeamPolicyInternal(const execution_space& space,
+//                      const array_type& league_sizes_request,
+//                      int team_size_request,
+//                      const Kokkos::AUTO_t& /* vector_length_request */
+//                      )
+//       : TeamPolicyInternal(space, league_sizes_request, team_size_request,
+//       -1) {
+//   }
+//
+//   TeamPolicyInternal(const array_type& league_sizes_request,
+//                      const Kokkos::AUTO_t& team_size_request,
+//                      int vector_length_request = 1)
+//       : TeamPolicyInternal(typename traits::execution_space(),
+//                            league_sizes_request, team_size_request,
+//                            vector_length_request) {}
+//
+//   TeamPolicyInternal(const array_type& league_sizes_request,
+//                      const Kokkos::AUTO_t& team_size_request,
+//                      const Kokkos::AUTO_t& vector_length_request)
+//       : TeamPolicyInternal(typename traits::execution_space(),
+//                            league_sizes_request, team_size_request,
+//                            vector_length_request) {}
+//   TeamPolicyInternal(const array_type& league_sizes_request,
+//                      int team_size_request,
+//                      const Kokkos::AUTO_t& vector_length_request)
+//       : TeamPolicyInternal(typename traits::execution_space(),
+//                            league_sizes_request, team_size_request,
+//                            vector_length_request) {}
+//
+//   TeamPolicyInternal(const array_type& league_sizes_request,
+//                      int team_size_request, int vector_length_request = 1)
+//       : TeamPolicyInternal(typename traits::execution_space(),
+//                            league_sizes_request, team_size_request,
+//                            vector_length_request) {}
+//
+//   TeamPolicyInternal(const PolicyUpdate, const TeamPolicyInternal& other,
+//                      typename traits::execution_space space)
+//       : TeamPolicyInternal(other) {
+//     this->m_space = std::move(space);
+//   }
+//
+//   inline int chunk_size() const { return m_flat_policy.chunk_size(); }
+//
+//   /** \brief set chunk_size to a discrete value*/
+//   inline TeamPolicyInternal& set_chunk_size(
+//       typename traits::index_type chunk_size_) {
+//     m_flat_policy.set_chunk_size(chunk_size_);
+//     return *this;
+//   }
+//
+//   /** \brief set per team scratch size for a specific level of the scratch
+//    * hierarchy */
+//   inline TeamPolicyInternal& set_scratch_size(const int& level,
+//                                               const PerTeamValue& per_team) {
+//     m_flat_policy.set_scratch_size(level, per_team);
+//     return *this;
+//   }
+//
+//   /** \brief set per thread scratch size for a specific level of the scratch
+//    * hierarchy */
+//   inline TeamPolicyInternal& set_scratch_size(
+//       const int& level, const PerThreadValue& per_thread) {
+//     m_flat_policy.set_scratch_size(level, per_thread);
+//     return *this;
+//   }
+//
+//   /** \brief set per thread and per team scratch size for a specific level of
+//    * the scratch hierarchy */
+//   inline TeamPolicyInternal& set_scratch_size(
+//       const int& level, const PerTeamValue& per_team,
+//       const PerThreadValue& per_thread) {
+//     m_flat_policy.set_scratch_size(level, per_team, per_thread);
+//     return *this;
+//   }
+//
+//   using member_type =
+//       Impl::MDTeamMember<rank, typename base_policy::member_type>;
+// };
+
+template <class ExecSpace, unsigned rank_, class... Properties>
+class TeamPolicyInternal<
+    Kokkos::Rank<rank_, Kokkos::Iterate::Default, Kokkos::Iterate::Default>,
+    ExecSpace, Properties...>
+    : public TeamPolicyInternal<ExecSpace, Properties...> {
+ public:
+  static constexpr unsigned rank = rank_;
+
+ private:
+  using traits          = Impl::PolicyTraits<Properties...>;
+  using base_policy     = TeamPolicyInternal<ExecSpace, Properties...>;
+  using array_type      = Kokkos::Array<int, rank>;
+  using execution_space = ExecSpace;
+
+  static int compute_league_size(const array_type& league_sizes) {
+    int res = 1;
+    for (unsigned i = 0; i < rank; i++) {
+      res *= league_sizes[i];
+    }
+    return res;
+  }
+
+  array_type m_league_sizes;
+
+ public:
+  inline int league_size() const { return base_policy::league_size(); }
+  inline int league_size(int dim) const {
+    return m_league_sizes[dim]; /* FIXME: bounds checking? */
+  }
+  inline const array_type& league_sizes() const { return m_league_sizes; }
+
+  /** \brief  Specify league size, request team size */
+  TeamPolicyInternal(const execution_space& space,
+                     const array_type& league_sizes_request,
+                     int team_size_request, int vector_length_request = 1)
+      : base_policy(space, compute_league_size(league_sizes_request),
+                    team_size_request, vector_length_request),
+        m_league_sizes(league_sizes_request) {}
+
+  TeamPolicyInternal(const execution_space& space,
+                     const array_type& league_sizes_request,
+                     const Kokkos::AUTO_t& /**team_size_request*/,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(space, league_sizes_request, -1,
+                           vector_length_request) {}
+
+  TeamPolicyInternal(const execution_space& space,
+                     const array_type& league_sizes_request,
+                     const Kokkos::AUTO_t& /* team_size_request */
+                     ,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+                     )
+      : TeamPolicyInternal(space, league_sizes_request, -1, -1) {}
+
+  TeamPolicyInternal(const execution_space& space,
+                     const array_type& league_sizes_request,
+                     int team_size_request,
+                     const Kokkos::AUTO_t& /* vector_length_request */
+                     )
+      : TeamPolicyInternal(space, league_sizes_request, team_size_request, -1) {
+  }
+
+  TeamPolicyInternal(const array_type& league_sizes_request,
+                     const Kokkos::AUTO_t& team_size_request,
+                     int vector_length_request = 1)
+      : TeamPolicyInternal(typename traits::execution_space(),
+                           league_sizes_request, team_size_request,
+                           vector_length_request) {}
+
+  TeamPolicyInternal(const array_type& league_sizes_request,
+                     const Kokkos::AUTO_t& team_size_request,
+                     const Kokkos::AUTO_t& vector_length_request)
+      : TeamPolicyInternal(typename traits::execution_space(),
+                           league_sizes_request, team_size_request,
+                           vector_length_request) {}
+  TeamPolicyInternal(const array_type& league_sizes_request,
+                     int team_size_request,
+                     const Kokkos::AUTO_t& vector_length_request)
+      : TeamPolicyInternal(typename traits::execution_space(),
+                           league_sizes_request, team_size_request,
+                           vector_length_request) {}
+
+  TeamPolicyInternal(const array_type& league_sizes_request,
+                     int team_size_request, int vector_length_request = 1)
+      : TeamPolicyInternal(typename traits::execution_space(),
+                           league_sizes_request, team_size_request,
+                           vector_length_request) {}
+
+  TeamPolicyInternal(const PolicyUpdate, const TeamPolicyInternal& other,
+                     typename traits::execution_space space)
+      : TeamPolicyInternal(other) {
+    this->m_space = std::move(space);
+  }
+
+  /** \brief set chunk_size to a discrete value*/
+  inline TeamPolicyInternal& set_chunk_size(
+      typename traits::index_type chunk_size_) {
+    base_policy::set_chunk_size(chunk_size_);
+    return *this;
+  }
+
+  /** \brief set per team scratch size for a specific level of the scratch
+   * hierarchy */
+  inline TeamPolicyInternal& set_scratch_size(const int& level,
+                                              const PerTeamValue& per_team) {
+    base_policy::set_scratch_size(level, per_team);
+    return *this;
+  }
+
+  /** \brief set per thread scratch size for a specific level of the scratch
+   * hierarchy */
+  inline TeamPolicyInternal& set_scratch_size(
+      const int& level, const PerThreadValue& per_thread) {
+    base_policy::set_scratch_size(level, per_thread);
+    return *this;
+  }
+
+  /** \brief set per thread and per team scratch size for a specific level of
+   * the scratch hierarchy */
+  inline TeamPolicyInternal& set_scratch_size(
+      const int& level, const PerTeamValue& per_team,
+      const PerThreadValue& per_thread) {
+    base_policy::set_scratch_size(level, per_team, per_thread);
+    return *this;
+  }
+
+  using member_type =
+      Impl::MDTeamMember<rank, typename base_policy::member_type>;
+};
+}  // namespace Impl
+
+template <class... Properties>
+class MDTeamPolicy;
+
+template <class P, class... Properties>
+class MDTeamPolicy<P, Properties...>
+    : public Impl::TeamPolicyInternal<
+          P, typename Impl::PolicyTraits<P, Properties...>::execution_space,
+          Properties...> {
+ public:
+  using traits           = Kokkos::Impl::PolicyTraits<P, Properties...>;
+  using execution_policy = MDTeamPolicy<P, Properties...>;
+  using execution_space  = traits::execution_space;
+
+  static constexpr int rank = traits::iteration_pattern::rank;
+
+ private:
+  using team_policy = TeamPolicy<Properties...>;
+
+  using internal_policy = Impl::TeamPolicyInternal<
+      P, typename Impl::PolicyTraits<P, Properties...>::execution_space,
+      Properties...>;
+
+  using array_type = Kokkos::Array<int, rank>;
+
+  template <class T>
+  array_type validate_league_sizes_argument(
+      const Kokkos::Array<T, rank>& league_sizes) {
+    array_type res;
+    for (unsigned i = 0; i < rank; i++) {
+      int size = static_cast<int>(league_sizes[i]);
+      if (league_sizes[i] < 0 || size < 0) {
+        std::stringstream err;
+        err << "Kokkos::MDTeamPolicy error: league_size for dimension " << i
+            << " (" << league_sizes[i]
+            << ") must be greater than or equal to 0";
+        Kokkos::abort(err.str().c_str());
+      }
+      res[i] = size;
+    }
+    return res;
+  }
+
+  template <class T>
+  array_type validate_league_sizes_argument(const T (&league_sizes)[rank]) {
+    array_type res;
+    for (unsigned i = 0; i < rank; i++) {
+      int size = static_cast<int>(league_sizes[i]);
+      if (league_sizes[i] < 0 || size < 0) {
+        std::stringstream err;
+        err << "Kokkos::MDTeamPolicy error: league_size for dimension " << i
+            << " (" << league_sizes[i]
+            << ") must be greater than or equal to 0";
+        Kokkos::abort(err.str().c_str());
+      }
+      res[i] = size;
+    }
+    return res;
+  }
+
+  static int validate_team_size_argument(int team_size) {
+    if (team_size < 1) {
+      std::stringstream err;
+      err << "Kokkos::MDTeamPolicy error: team_size (" << team_size
+          << ") must be greater than or equal to 1";
+      Kokkos::abort(err.str().c_str());
+    }
+    return team_size;
+  }
+
+  static int validate_vector_length_argument(int vector_length) {
+    if (vector_length < 1) {
+      std::stringstream err;
+      err << "Kokkos::MDTeamPolicy error: vector_length (" << vector_length
+          << ") must be greater than or equal to 1";
+      Kokkos::abort(err.str().c_str());
+    }
+    return vector_length;
+  }
+
+ public:
+  static_assert(!std::is_void_v<typename traits::iteration_pattern>,
+                "Kokkos Error: MD iteration pattern not defined");
+
+  MDTeamPolicy() : internal_policy({}, AUTO) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space,
+               const Kokkos::Array<T, rank>& league_sizes, int team_size,
+               int vector_length = 1)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size),
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space,
+               const Kokkos::Array<T, rank>& league_sizes, Kokkos::AUTO_t,
+               int vector_length = 1)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO,
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space,
+               const Kokkos::Array<T, rank>& league_sizes, Kokkos::AUTO_t,
+               Kokkos::AUTO_t)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO, Kokkos::AUTO) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space,
+               const Kokkos::Array<T, rank>& league_sizes, int team_size,
+               Kokkos::AUTO_t)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size), Kokkos::AUTO) {}
+
+  /** \brief  Construct policy with the default instance of the execution space
+   */
+  template <std::integral T>
+  MDTeamPolicy(const Kokkos::Array<T, rank>& league_sizes, int team_size,
+               int vector_length = 1)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size),
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const Kokkos::Array<T, rank>& league_sizes, Kokkos::AUTO_t,
+               int vector_length = 1)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO,
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const Kokkos::Array<T, rank>& league_sizes, Kokkos::AUTO_t,
+               Kokkos::AUTO_t)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO, Kokkos::AUTO) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const Kokkos::Array<T, rank>& league_sizes, int team_size,
+               Kokkos::AUTO_t)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size), Kokkos::AUTO) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space, const T (&league_sizes)[rank],
+               int team_size, int vector_length = 1)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size),
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space, const T (&league_sizes)[rank],
+               Kokkos::AUTO_t, int vector_length = 1)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO,
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space, const T (&league_sizes)[rank],
+               Kokkos::AUTO_t, Kokkos::AUTO_t)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO, Kokkos::AUTO) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const execution_space& space, const T (&league_sizes)[rank],
+               int team_size, Kokkos::AUTO_t)
+      : internal_policy(space, validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size), Kokkos::AUTO) {}
+
+  /** \brief  Construct policy with the default instance of the execution space
+   */
+  template <std::integral T>
+  MDTeamPolicy(const T (&league_sizes)[rank], int team_size,
+               int vector_length = 1)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size),
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const T (&league_sizes)[rank], Kokkos::AUTO_t,
+               int vector_length = 1)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO,
+                        validate_vector_length_argument(vector_length)) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const T (&league_sizes)[rank], Kokkos::AUTO_t, Kokkos::AUTO_t)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        Kokkos::AUTO, Kokkos::AUTO) {}
+
+  template <std::integral T>
+  MDTeamPolicy(const T (&league_sizes)[rank], int team_size, Kokkos::AUTO_t)
+      : internal_policy(validate_league_sizes_argument(league_sizes),
+                        validate_team_size_argument(team_size), Kokkos::AUTO) {}
+
+  template <class... OtherProperties>
+  MDTeamPolicy(const MDTeamPolicy<OtherProperties...>& p) : internal_policy(p) {
+    // Cannot call converting constructor in the member initializer list because
+    // it is not a direct base.
+    internal_policy::traits::operator=(p);
+  }
+
+  MDTeamPolicy(const Impl::PolicyUpdate tag, const MDTeamPolicy& other,
+               typename traits::execution_space space)
+      : internal_policy(tag, other, std::move(space)) {}
+
+ private:
+  MDTeamPolicy(const internal_policy& p) : internal_policy(p) {}
+
+ public:
+  inline MDTeamPolicy& set_chunk_size(int chunk) {
+    static_assert(
+        std::is_same_v<decltype(internal_policy::set_chunk_size(chunk)),
+                       internal_policy&>,
+        "internal set_chunk_size should return a reference");
+    return static_cast<MDTeamPolicy&>(internal_policy::set_chunk_size(chunk));
+  }
+
+  inline MDTeamPolicy& set_scratch_size(const int& level,
+                                        const Impl::PerTeamValue& per_team) {
+    static_assert(std::is_same_v<decltype(internal_policy::set_scratch_size(
+                                     level, per_team)),
+                                 internal_policy&>,
+                  "internal set_chunk_size should return a reference");
+
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<MDTeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_team));
+  }
+  inline MDTeamPolicy& set_scratch_size(
+      const int& level, const Impl::PerThreadValue& per_thread) {
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<MDTeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_thread));
+  }
+  inline MDTeamPolicy& set_scratch_size(
+      const int& level, const Impl::PerTeamValue& per_team,
+      const Impl::PerThreadValue& per_thread) {
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<MDTeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_team, per_thread));
+  }
+  inline MDTeamPolicy& set_scratch_size(const int& level,
+                                        const Impl::PerThreadValue& per_thread,
+                                        const Impl::PerTeamValue& per_team) {
+    Impl::team_policy_check_valid_storage_level_argument(level);
+    return static_cast<MDTeamPolicy&>(
+        internal_policy::set_scratch_size(level, per_team, per_thread));
+  }
+};
 
 namespace Impl {
 
